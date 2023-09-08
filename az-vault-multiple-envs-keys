@@ -1,0 +1,25 @@
+#!/bin/bash
+
+# add secrets_${keyVaultName}.txt file to the same directory as this script with 4 vault
+
+
+keyVaults=("vault1" "vault2" "vault3" "vault4")
+
+for keyVaultName in "${keyVaults[@]}"; do
+    secrets_file="secrets_${keyVaultName}.txt"
+
+    if [ -f "$secrets_file" ]; then
+        echo "Creating secrets in '$keyVaultName' from '$secrets_file'"
+
+        while IFS=':' read -r secretName secretValue || [ -n "$line" ]; do
+            az keyvault secret set --vault-name "$keyVaultName" --name "$secretName" --value "$secretValue"
+            if [ $? -eq 0 ]; then
+                echo "Created secret '$secretName' in '$keyVaultName'"
+            else
+                echo "Failed to create secret '$secretName' in '$keyVaultName'"
+            fi
+        done < "$secrets_file"
+    else
+        echo "Secrets file not found for '$keyVaultName'"
+    fi
+done
