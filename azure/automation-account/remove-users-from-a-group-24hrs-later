@@ -1,0 +1,82 @@
+
+az login --identity
+
+# Define the group ID
+$groupId = "PUT THE GROUP ID HERE"
+Write-Output "Group ID: $groupId"
+
+# Set the Graph API URI for audit logs (retrieve users added to the group)
+$uri = "https://graph.microsoft.com/v1.0/auditLogs/directoryAudits?`$filter=activityDisplayName eq 'Add member to group' and targetResources/any(tr: tr/id eq '$($groupId)')&`$orderby=activityDateTime desc&`$top=10"
+
+# Get the audit logs (only last 10 results)
+$response = az rest --method GET --uri $uri --headers "Content-Type=application/json"
+$auditLogs = $response | ConvertFrom-Json
+
+Write-Output "Audit Logs Value Count: $($auditLogs.value.Count)"
+
+# Get the current date and time
+$currentTime = Get-Date
+
+# Filter users added more than 24 hours ago
+$oldUsers = @()
+$auditLogs.value | ForEach-Object {
+    $activityDateTime = [datetime]::Parse($_.activityDateTime)
+    $hoursDifference = ($currentTime - $activityDateTime).TotalHours
+    
+    if ($hoursDifference -gt 24) {
+        $oldUsers += $_
+    }
+}
+
+Write-Output "Total old users found: $($oldUsers.Count)"
+
+function Send-SlackNotification {
+    param (
+        [string]$message
+    )
+    $slackWebhookUrl = 'https://hooks.slack.com/services/PUT THE WEBHOOK ID HERE'
+    $body = @{
+        text = $message
+    } | ConvertTo-Json
+
+    try {
+        Invoke-RestMethod -Uri $slackWebhookUrl -Method Post -Body $body -ContentType 'application/json'
+    } catch {
+        Write-Error "Failed to send Slack notification: $_"
+    }
+}
+
+if ($oldUsers.Count -gt 0) {
+    Write-Output "Removing old users:"
+    $removedCount = 0
+    $removedUsers = @()
+    $oldUsers | ForEach-Object {
+        $user = $_.targetResources | Where-Object { $_.type -eq "User" } | Select-Object -First 1
+        Write-Output "Checking User: $($user.userPrincipalName)"
+        try {
+            $memberCheck = az ad group member check --group $groupId --member-id $user.id | ConvertFrom-Json
+            if ($memberCheck.value) {
+                az ad group member remove --group $groupId --member-id $user.id
+                Write-Output "Successfully removed user: $($user.userPrincipalName)"
+                $removedCount++
+                $removedUsers += $user.userPrincipalName
+                Send-SlackNotification "User removed from group: $($user.userPrincipalName)"
+            } else {
+                Write-Output "User $($user.userPrincipalName) is not in the group. Skipping."
+              #  Send-SlackNotification "User not in group: $($user.userPrincipalName)"
+            }
+        } catch {
+            Write-Error "Failed to process user $($user.userPrincipalName): $_"
+            Send-SlackNotification "Failed to process user: $($user.userPrincipalName). Error: $_"
+        }
+        Write-Output "------------------------"
+    }
+    Write-Output "Total users removed: $removedCount"
+    if ($removedCount -gt 0) {
+        #Send-SlackNotification "Summary: Removed $removedCount users from the group. Users: $($removedUsers -join ', ')"
+        
+    }
+} else {
+    Write-Output "No users were added more than 24 hours ago."
+    # Send-SlackNotification "No users were removed from the group as none were added more than 24 hours ago."
+}
